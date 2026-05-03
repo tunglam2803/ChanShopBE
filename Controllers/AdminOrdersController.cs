@@ -1,5 +1,7 @@
-﻿using Microsoft.AspNetCore.Authorization;
+﻿using CuaHangQuanAo.Data;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace CuaHangQuanAo.API.Controllers
 {
@@ -8,31 +10,58 @@ namespace CuaHangQuanAo.API.Controllers
     [Authorize(Roles = "Admin")]
     public class AdminOrdersController : ControllerBase
     {
-        // ==========================================
-        // 1. XEM TOÀN BỘ ĐƠN HÀNG (DỮ LIỆU GIẢ CHỜ DATABASE)
-        // ==========================================
-        [HttpGet("orders")]
-        public IActionResult GetAllOrders()
+        private readonly AppDbContext _context;
+
+        public AdminOrdersController(AppDbContext context)
         {
-            // Trả về một mảng rỗng tạm thời để không bị lỗi code
-            return Ok(new string[] { "Chưa có database cho Đơn hàng, hãy nhắc team cập nhật AppDbContext!" });
+            _context = context;
         }
 
-        // ==========================================
-        // 2. THỐNG KÊ TỔNG QUAN (DASHBOARD - DỮ LIỆU GIẢ)
-        // ==========================================
-        [HttpGet("dashboard")]
-        public IActionResult GetDashboardStats()
+        [HttpGet("orders")]
+        public async Task<IActionResult> GetAllOrders()
         {
-            var dashboardData = new
-            {
-                TotalOrders = 0, // Chờ DB
-                TotalProducts = 8, // Số lượng cứng dựa trên seed data
-                TotalUsers = 0, // Chờ DB
-                TotalRevenue = 0 // Chờ DB
-            };
+            var orders = await _context.Orders
+                .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.Product)
+                .OrderByDescending(o => o.OrderDate)
+                .Select(o => new
+                {
+                    o.Id,
+                    o.UserId,
+                    o.OrderDate,
+                    o.TotalAmount,
+                    o.Status,
+                    Items = o.OrderItems.Select(oi => new
+                    {
+                        oi.ProductId,
+                        oi.Product.Name,
+                        oi.Quantity,
+                        oi.PriceAtPurchase
+                    })
+                })
+                .ToListAsync();
 
-            return Ok(dashboardData);
+            return Ok(new { success = true, data = orders });
+        }
+
+        [HttpGet("dashboard")]
+        public async Task<IActionResult> GetDashboardStats()
+        {
+            var totalOrders = await _context.Orders.CountAsync();
+            var totalProducts = await _context.Products.CountAsync();
+            var totalUsers = await _context.Users.CountAsync();
+            var totalRevenue = await _context.Orders
+                .Where(o => o.Status == "Paid")
+                .SumAsync(o => (decimal?)o.TotalAmount) ?? 0;
+
+            return Ok(new
+            {
+                success = true,
+                totalOrders,
+                totalProducts,
+                totalUsers,
+                totalRevenue
+            });
         }
     }
 }

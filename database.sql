@@ -275,3 +275,19 @@ GO
 COMMIT;
 GO
 
+USE CuaHangQuanAo;
+GO
+
+-- Xem tất cả admin user
+SELECT Id, Username, Email, RoleId, TokenExpires FROM Users WHERE Username = 'admin';
+GO
+
+-- Xóa tất cả admin cũ, chỉ giữ cái Id lớn nhất (mới nhất)
+DELETE FROM Users 
+WHERE Username = 'admin' 
+AND Id NOT IN (SELECT MAX(Id) FROM Users WHERE Username = 'admin');
+GO
+
+-- Xác nhận còn 1 admin duy nhất
+SELECT Id, Username, Email, RoleId, TokenExpires FROM Users WHERE Username = 'admin';
+GO

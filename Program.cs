@@ -1,17 +1,17 @@
 ﻿using CuaHangQuanAo.Data;
+using CuaHangQuanAo.Data.Entities;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models; // Dòng này cực kỳ quan trọng để hết đỏ Models
+using Microsoft.OpenApi.Models;
 using System.Text;
 
-var builder = WebApplication.CreateBuilder(args); // Hết đỏ builder
+var builder = WebApplication.CreateBuilder(args);
 
-// 1. Cấu hình Swagger (Hết đỏ Reference)
+// 1. Swagger
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "Cua Hang API", Version = "v1" });
-
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "Nhập Token theo cú pháp: Bearer [token_của_bạn]",
@@ -20,24 +20,19 @@ builder.Services.AddSwaggerGen(c =>
         Type = SecuritySchemeType.ApiKey,
         Scheme = "Bearer"
     });
-
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
             new OpenApiSecurityScheme
             {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
             },
             new string[] { }
         }
     });
 });
 
-// 2. Cấu hình JWT Authentication (Giữ nguyên phần này của Huy)
+// 2. JWT Authentication
 var key = Encoding.ASCII.GetBytes(builder.Configuration.GetSection("AppSettings:Token").Value!);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -51,43 +46,96 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+// 3. Controllers + JSON
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
-        // Chặn vòng lặp vô tận giữa Product và Category
-        options.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+        options.JsonSerializerOptions.ReferenceHandler =
+            System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
 
+// 4. Database
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
-// Thêm các dịch vụ khác của Huy ở đây (DbContext...)
+
+// 5. CORS
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", builder =>
+    options.AddPolicy("AllowAll", policy =>
     {
-        builder.AllowAnyOrigin()
-               .AllowAnyMethod()
-               .AllowAnyHeader();
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
     });
 });
+
 var app = builder.Build();
 
-// 3. Kích hoạt Middleware (Phải đúng thứ tự này)
+// 6. Auto-seed Roles + Admin
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+    // Đảm bảo Role Admin Id=1 tồn tại
+    if (!db.Roles.Any(r => r.Id == 1))
+    {
+        db.Database.ExecuteSqlRaw(
+            "SET IDENTITY_INSERT Roles ON; " +
+            "INSERT INTO Roles (Id, Name) VALUES (1, N'Admin'); " +
+            "SET IDENTITY_INSERT Roles OFF;");
+        Console.WriteLine("✅ Role Admin created");
+    }
+
+    // Đảm bảo Role User Id=2 tồn tại
+    if (!db.Roles.Any(r => r.Id == 2))
+    {
+        db.Database.ExecuteSqlRaw(
+            "SET IDENTITY_INSERT Roles ON; " +
+            "INSERT INTO Roles (Id, Name) VALUES (2, N'User'); " +
+            "SET IDENTITY_INSERT Roles OFF;");
+        Console.WriteLine("✅ Role User created");
+    }
+
+    // Dùng SQL trực tiếp để tránh đọc DateTime NULL
+    var adminExists = db.Database.ExecuteSqlRaw(
+        "SELECT 1 FROM Users WHERE Username = 'admin'") >= 0
+        && db.Users.Any(u => u.Username == "admin");
+
+    if (!adminExists)
+    {
+        // Insert thẳng bằng SQL, set TokenExpires = GETDATE() tránh NULL
+        var hash = BCrypt.Net.BCrypt.HashPassword("Admin@123");
+        db.Database.ExecuteSqlRaw(
+            "INSERT INTO Users (Username, Email, PasswordHash, RoleId, TokenExpires) " +
+            "VALUES ({0}, {1}, {2}, {3}, {4})",
+            "admin", "admin@chanshop.com", hash, 1, DateTime.Now.AddYears(1));
+        Console.WriteLine("✅ Admin account created: admin / Admin@123");
+    }
+    else
+    {
+        // Fix RoleId nếu sai, cũng fix TokenExpires NULL
+        db.Database.ExecuteSqlRaw(
+            "UPDATE Users SET RoleId = 1, " +
+            "TokenExpires = CASE WHEN TokenExpires IS NULL THEN GETDATE() ELSE TokenExpires END " +
+            "WHERE Username = 'admin'");
+        Console.WriteLine("✅ Admin RoleId verified");
+    }
+}
+
+// 7. Middleware pipeline
 app.UseSwagger();
 app.UseSwaggerUI();
 
-// Redirect root to Swagger
 app.MapGet("/", context =>
 {
     context.Response.Redirect("/swagger/index.html", permanent: false);
     return Task.CompletedTask;
 });
 
-// Phải đặt UseCors trước HTTPS redirect để OPTIONS preflight không bị redirect
 app.UseCors("AllowAll");
 app.UseHttpsRedirection();
-app.UseStaticFiles(); // Cho phép truy cập ảnh trong thư mục wwwroot
-app.UseAuthentication(); // Xác thực trước
-app.UseAuthorization();  // Phân quyền sau
+app.UseStaticFiles();
+app.UseAuthentication();
+app.UseAuthorization();
 app.MapControllers();
 app.Run();
